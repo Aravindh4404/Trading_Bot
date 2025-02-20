@@ -1,8 +1,6 @@
 import yfinance as yf
-import requests
 import feedparser
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
-import pandas as pd
 import time
 
 # Function to get real-time stock price data from Yahoo Finance
@@ -58,6 +56,7 @@ def trading_strategy(symbol):
 # Running the script for a stock symbol
 if __name__ == "__main__":
     while True:
-        # trading_strategy("TSLA")
-        trading_strategy("BTC-USD")
+        trading_strategy("TSLA")
+        # trading_strategy("AAPL")
+        # trading_strategy("BTC-USD")
         time.sleep(60)  # Run every 1 minute
