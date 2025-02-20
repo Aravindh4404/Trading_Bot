@@ -1,6 +1,6 @@
 import yfinance as yf
 import requests
-import feedparser  # Install using: pip install feedparser
+import feedparser
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 import pandas as pd
 import time
@@ -55,7 +55,7 @@ def trading_strategy(symbol):
     else:
         print("➡️ Neutral sentiment. Holding position.")
 
-# Running the script for a stock symbol (Example: Apple 'AAPL')
+# Running the script for a stock symbol
 if __name__ == "__main__":
     while True:
         # trading_strategy("TSLA")
