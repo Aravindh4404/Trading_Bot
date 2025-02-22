@@ -8,6 +8,16 @@ import time
 from dataclasses import dataclass
 from typing import Dict, List, Tuple
 
+import yfinance as yf
+import feedparser
+import numpy as np
+import pandas as pd
+from datetime import datetime, timedelta
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+import time
+from dataclasses import dataclass
+from typing import Dict, List, Tuple
+
 
 @dataclass
 class NewsItem:
