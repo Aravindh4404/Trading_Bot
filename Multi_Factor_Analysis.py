@@ -1,426 +1,379 @@
 import json
 import re
-from dataclasses import dataclass
 from typing import Dict, List, Tuple
-
 import numpy as np
+import pandas as pd
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
 
 @dataclass
-class MarketState:
-    """Represents the current state of the market."""
-    price: float
+class NewsItem:
+    content: str
+    timestamp: datetime
+    source: str
+    score: float
+
+
+@dataclass
+class MarketEnvironment:
+    """Represents the dynamic trading environment"""
+    current_price: float
     volume: float
-    sentiment_score: float
-    technical_indicators: Dict[str, float]
+    timestamp: datetime
+    news_items: List[NewsItem]
+    market_hours: bool
     volatility: float
 
-
-class FinancialSentimentAnalyzer:
-    def __init__(self):
-        self.analyzer = SentimentIntensityAnalyzer()
-
-        # Financial-specific sentiment multipliers
-        self.financial_boost_words = {
-            'growth': 1.5,
-            'profit': 1.3,
-            'revenue': 1.2,
-            'expansion': 1.4,
-            'investment': 1.2,
-            'sales': 1.3,
-            'increase': 1.2,
-            'decrease': 0.8,
-            'loss': 0.7,
-            'debt': 0.8,
-            'lawsuit': 0.6,
-            'investigation': 0.7,
-            'fine': 0.7,
-            'penalty': 0.7
+    def get_state_features(self) -> Dict[str, float]:
+        """Extract relevant features from the environment"""
+        return {
+            'price': self.current_price,
+            'volume': self.volume,
+            'volatility': self.volatility,
+            'time_of_day': self.timestamp.hour + self.timestamp.minute / 60,
+            'is_market_hours': float(self.market_hours)
         }
 
-    def extract_content_from_json(self, json_data: str) -> List[str]:
-        """Extract and clean content from JSON data."""
-        try:
-            data = json.loads(json_data) if isinstance(json_data, str) else json_data
-            messages = [entry["content"] for entry in data["results"]]
-            return messages
-        except Exception as e:
-            print(f"Error parsing JSON: {e}")
-            return []
 
-    def clean_text(self, text: str) -> str:
-        """Clean and prepare text for analysis."""
-        # Remove special characters and extra whitespace
-        text = re.sub(r'[\[\]\(\)\{\}]', '', text)
-        text = re.sub(r'\s+', ' ', text)
-        return text.strip()
+class MarketAnalyzer:
+    def __init__(self):
+        self.sentiment_analyzer = SentimentIntensityAnalyzer()
 
-    def extract_financial_metrics(self, text: str) -> Dict[str, List[Tuple[str, float]]]:
-        """Extract key financial metrics and their context."""
+        # Custom financial terms and their impact weights
+        self.financial_terms = {
+            'revenue': 2.0,
+            'profit': 1.8,
+            'growth': 1.5,
+            'decline': 0.6,
+            'lawsuit': 0.4,
+            'investigation': 0.5,
+            'partnership': 1.4,
+            'expansion': 1.3,
+            'delay': 0.7,
+            'production': 1.2
+        }
+
+    def analyze_news(self, news_items: List[NewsItem]) -> Dict[str, float]:
+        """Perform comprehensive news analysis"""
+        if not news_items:
+            return {'compound': 0.0, 'neg': 0.0, 'neu': 0.0, 'pos': 0.0}
+
+        # Weight recent news more heavily
+        weighted_scores = []
+        current_time = max(news.timestamp for news in news_items)
+
+        for news in news_items:
+            # Calculate time decay weight (more recent = higher weight)
+            time_diff = (current_time - news.timestamp).total_seconds() / 3600  # hours
+            time_weight = np.exp(-0.1 * time_diff)  # exponential decay
+
+            # Get base sentiment
+            sentiment = self.sentiment_analyzer.polarity_scores(news.content)
+
+            # Adjust for financial terms
+            adjusted_score = self._adjust_for_financial_terms(
+                news.content,
+                sentiment['compound']
+            )
+
+            # Apply source credibility weight
+            source_weight = news.score  # Using the provided source score
+
+            weighted_scores.append({
+                'score': adjusted_score,
+                'weight': time_weight * source_weight
+            })
+
+        # Calculate weighted average
+        total_weight = sum(ws['weight'] for ws in weighted_scores)
+        if total_weight == 0:
+            return {'compound': 0.0, 'neg': 0.0, 'neu': 0.0, 'pos': 0.0}
+
+        weighted_compound = sum(
+            ws['score'] * ws['weight'] for ws in weighted_scores
+        ) / total_weight
+
+        return {
+            'compound': weighted_compound,
+            'neg': min(0, weighted_compound),
+            'neu': 1 - abs(weighted_compound),
+            'pos': max(0, weighted_compound)
+        }
+
+    def _adjust_for_financial_terms(self, text: str, base_score: float) -> float:
+        """Adjust sentiment score based on financial terms"""
+        adjustment = 1.0
+
+        for term, weight in self.financial_terms.items():
+            if term.lower() in text.lower():
+                # Count occurrences and adjust impact
+                count = text.lower().count(term.lower())
+                # Safe logarithmic scaling to prevent numerical issues
+                if count * (weight - 1) > 0:
+                    adjustment *= (1 + np.log1p(count * (weight - 1)))
+
+        return np.clip(base_score * adjustment, -1, 1)
+
+    def extract_metrics(self, text: str) -> Dict[str, List[Tuple[str, float]]]:
+        """Extract numerical metrics from text"""
         metrics = {
             'revenue': [],
-            'profit': [],
-            'growth': [],
-            'market_position': []
+            'production': [],
+            'deliveries': [],
+            'growth': []
         }
 
-        # Example pattern for capturing "revenue ... X billion"
-        revenue_matches = re.finditer(r'revenue.*?\$?\s*(\d+\.?\d*)\s*billion', text, re.IGNORECASE)
+        # Extract revenue figures
+        revenue_matches = re.finditer(
+            r'revenue.*?\$?\s*(\d+\.?\d*)\s*(billion|million|B|M)',
+            text,
+            re.IGNORECASE
+        )
         for match in revenue_matches:
-            metrics['revenue'].append(('billion', float(match.group(1))))
+            try:
+                amount = float(match.group(1))
+                unit = match.group(2).lower()
+                if 'b' in unit:
+                    amount *= 1e9
+                elif 'm' in unit:
+                    amount *= 1e6
+                metrics['revenue'].append(('USD', amount))
+            except (ValueError, IndexError):
+                continue
 
-        # Profit/Loss pattern: captures "profit ... X billion" or "loss ... X billion"
-        profit_matches = re.finditer(r'(profit|loss).*?\$?\s*(\d+\.?\d*)\s*billion', text, re.IGNORECASE)
-        for match in profit_matches:
-            metrics['profit'].append((match.group(1), float(match.group(2))))
+        # Extract production/delivery numbers
+        production_matches = re.finditer(
+            r'(produced|delivered)\s*(\d+,?\d*)',
+            text,
+            re.IGNORECASE
+        )
+        for match in production_matches:
+            try:
+                action = match.group(1).lower()
+                amount = float(match.group(2).replace(',', ''))
+                metrics['production' if 'produce' in action else 'deliveries'].append(
+                    ('units', amount)
+                )
+            except (ValueError, IndexError):
+                continue
 
-        # Growth indicators: look for "increase <X>%", "decrease <X>%", etc.
-        growth_patterns = ['increase', 'decrease', 'grew', 'declined']
-        for pattern in growth_patterns:
-            # Use a raw-string style pattern with an f-string: (\\d+) to avoid invalid escape sequence warning
-            growth_matches = re.finditer(rf'{pattern}.*?(\d+)%', text, re.IGNORECASE)
-            for gmatch in growth_matches:
-                metrics['growth'].append((pattern, float(gmatch.group(1))))
+        # Extract growth percentages
+        growth_matches = re.finditer(
+            r'(increased|decreased|grew|declined)\s*by\s*(\d+\.?\d*)%',
+            text,
+            re.IGNORECASE
+        )
+        for match in growth_matches:
+            try:
+                direction = match.group(1).lower()
+                amount = float(match.group(2))
+                if 'decreased' in direction or 'declined' in direction:
+                    amount = -amount
+                metrics['growth'].append(('percent', amount))
+            except (ValueError, IndexError):
+                continue
 
         return metrics
 
-    def analyze_market_sentiment(self, text: str) -> Dict[str, any]:
-        """Perform detailed market sentiment analysis."""
-        # Clean the text
-        cleaned_text = self.clean_text(text)
 
-        # Get base sentiment scores
-        base_sentiment = self.analyzer.polarity_scores(cleaned_text)
+class AdaptiveTradingAgent:
+    def __init__(self, learning_rate: float = 0.01):
+        self.market_analyzer = MarketAnalyzer()
+        self.learning_rate = learning_rate
 
-        # Extract financial metrics
-        financial_metrics = self.extract_financial_metrics(cleaned_text)
-
-        # Adjust sentiment based on financial context
-        adjusted_sentiment = self.adjust_sentiment_for_financial_context(
-            base_sentiment,
-            cleaned_text,
-            financial_metrics
-        )
-
-        return {
-            'base_sentiment': base_sentiment,
-            'adjusted_sentiment': adjusted_sentiment,
-            'financial_metrics': financial_metrics,
-            'market_signals': self.generate_market_signals(adjusted_sentiment, financial_metrics)
+        # Initialize strategy weights
+        self.strategy_weights = {
+            'sentiment': 0.3,
+            'technical': 0.4,
+            'fundamental': 0.3
         }
 
-    def adjust_sentiment_for_financial_context(
-        self,
-        base_sentiment: Dict[str, float],
-        text: str,
-        metrics: Dict[str, List[Tuple[str, float]]]
-    ) -> Dict[str, float]:
-        """Adjust sentiment scores based on financial context."""
-        adjusted = base_sentiment.copy()
+        # Performance tracking
+        self.performance_history = []
+        self.strategy_performance = {
+            'sentiment': [],
+            'technical': [],
+            'fundamental': []
+        }
 
-        # Adjust for financial terms
-        for word, multiplier in self.financial_boost_words.items():
-            if word in text.lower():
-                adjusted['compound'] *= multiplier
+        # Risk management parameters
+        self.max_position_size = 0.2  # Maximum 20% of portfolio in single position
+        self.stop_loss = 0.05  # 5% stop loss
+        self.take_profit = 0.15  # 15% take profit
 
-        # Adjust for revenue trends
-        if metrics['revenue']:
-            # Example heuristic: if any revenue item is above $10 billion, slightly boost compound
-            if any(amount > 10 for _, amount in metrics['revenue']):
-                adjusted['compound'] *= 1.2
+        # Initialize volume history
+        self.volume_history = []
+        self.max_volume_history = 100  # Keep last 100 volume data points
 
-        # Adjust for profit/loss
-        if metrics['profit']:
-            profit_impact = sum(
-                amount if ptype.lower() == 'profit' else -amount
-                for ptype, amount in metrics['profit']
+    def update_volume_history(self, volume: float):
+        """Update volume history with new data point"""
+        self.volume_history.append(volume)
+        if len(self.volume_history) > self.max_volume_history:
+            self.volume_history.pop(0)
+
+    def update_strategy_weights(self, performance_metrics: Dict[str, float]):
+        """Adapt strategy weights based on performance"""
+        total_performance = sum(performance_metrics.values())
+        if total_performance == 0:
+            return
+
+        # Calculate new weights based on relative performance
+        new_weights = {
+            strategy: performance / total_performance
+            for strategy, performance in performance_metrics.items()
+        }
+
+        # Smooth weight changes using learning rate
+        for strategy in self.strategy_weights:
+            self.strategy_weights[strategy] = (
+                    (1 - self.learning_rate) * self.strategy_weights[strategy] +
+                    self.learning_rate * new_weights[strategy]
             )
-            # Example: multiply compound by (1 + total_profit_impact * 0.1)
-            adjusted['compound'] *= (1 + (profit_impact * 0.1))
 
-        # Normalize compound score to [-1, 1] range
-        adjusted['compound'] = max(min(adjusted['compound'], 1.0), -1.0)
+    def analyze_environment(self, env: MarketEnvironment) -> Dict[str, float]:
+        """Analyze current market environment"""
+        # Update volume history
+        self.update_volume_history(env.volume)
 
-        return adjusted
+        # Sentiment analysis
+        sentiment_scores = self.market_analyzer.analyze_news(env.news_items)
 
-    def generate_market_signals(
-        self,
-        sentiment: Dict[str, float],
-        metrics: Dict[str, List[Tuple[str, float]]]
-    ) -> Dict[str, str]:
-        """Generate detailed market signals based on sentiment and metrics."""
-        compound_score = sentiment['compound']
+        # Technical analysis
+        technical_signals = self._calculate_technical_signals(env)
 
-        # Determine signal strength
-        abs_compound = abs(compound_score)
-        if abs_compound > 0.5:
-            signal_strength = 'strong'
-        elif abs_compound > 0.2:
-            signal_strength = 'moderate'
-        else:
-            signal_strength = 'weak'
+        # Fundamental analysis
+        fundamental_scores = self._analyze_fundamentals(env)
 
-        # Base trading decision
-        if compound_score > 0.2:
+        # Calculate risk score
+        risk_score = self._calculate_risk_score(env)
+
+        # Combine analyses using current strategy weights
+        return {
+            'sentiment_score': sentiment_scores['compound'] * self.strategy_weights['sentiment'],
+            'technical_score': technical_signals['signal'] * self.strategy_weights['technical'],
+            'fundamental_score': fundamental_scores['score'] * self.strategy_weights['fundamental'],
+            'risk_score': risk_score
+        }
+
+    def decide_action(self, env: MarketEnvironment) -> Tuple[str, float, Dict]:
+        """Make trading decision based on current environment"""
+        analysis = self.analyze_environment(env)
+
+        # Combine signals
+        total_signal = (
+                analysis['sentiment_score'] +
+                analysis['technical_score'] +
+                analysis['fundamental_score']
+        )
+
+        # Adjust for risk
+        risk_adjusted_signal = total_signal * (1 - analysis['risk_score'])
+
+        # Calculate position size based on confidence
+        confidence = abs(risk_adjusted_signal)
+        position_size = min(
+            confidence * self.max_position_size,
+            self.max_position_size
+        )
+
+        # Determine action
+        if risk_adjusted_signal > 0.2:
             action = 'BUY'
-        elif compound_score < -0.2:
+        elif risk_adjusted_signal < -0.2:
             action = 'SELL'
         else:
             action = 'HOLD'
+            position_size = 0
 
-        # Confidence level: example heuristic
-        has_revenue = len(metrics['revenue']) > 0
-        has_profit = len(metrics['profit']) > 0
-        if has_revenue and has_profit:
-            confidence = 'high'
-        else:
-            confidence = 'medium' if has_revenue or has_profit else 'low'
+        return action, position_size, analysis
 
-        return {
-            'action': action,
-            'signal_strength': signal_strength,
-            'confidence': confidence,
-            'compound_score': compound_score
-        }
+    def _calculate_technical_signals(self, env: MarketEnvironment) -> Dict[str, float]:
+        """Calculate technical indicators and signals"""
+        # This is a placeholder returning random values
+        # In a real implementation, you would calculate actual technical indicators
+        return {'signal': np.random.uniform(-1, 1)}
 
-
-class AdaptiveTradingAgent:
-    def __init__(self, learning_rate: float = 0.01, memory_size: int = 1000):
-        self.sentiment_analyzer = FinancialSentimentAnalyzer()
-        self.learning_rate = learning_rate
-        self.memory = []
-        self.memory_size = memory_size
-        self.success_threshold = 0.6  # Configurable threshold for strategy adaptation
-
-        # Initialize weights for different factors
-        self.weights = {
-            'sentiment': 0.3,
-            'technical': 0.4,
-            'volume': 0.15,
-            'volatility': 0.15
-        }
-
-        # Track performance of different strategies
-        self.strategy_performance = {
-            'trend_following': [],
-            'mean_reversion': [],
-            'sentiment_based': []
-        }
-
-    def update_weights(self, reward: float, factors_used: Dict[str, float]):
-        """Adapt weights based on strategy performance."""
-        for factor, contribution in factors_used.items():
-            # Adjust weights using reward feedback
-            self.weights[factor] += self.learning_rate * reward * contribution
-
-        # Normalize weights
-        total = sum(self.weights.values())
-        self.weights = {k: v / total for k, v in self.weights.items()}
-
-    def calculate_technical_indicators(self, price_history: List[float]) -> Dict[str, float]:
-        """Calculate technical indicators for decision making."""
-        prices = np.array(price_history)
-        return {
-            'price': prices[-1],                 # Current price
-            'sma': np.mean(prices[-20:]),        # 20-period simple moving average
-            'momentum': prices[-1] - prices[-5], # 5-period momentum
-            'volatility': np.std(prices[-20:]),  # 20-period volatility
-            'rsi': self._calculate_rsi(prices)   # Relative Strength Index
-        }
-
-    def _calculate_rsi(self, prices: np.array, periods: int = 14) -> float:
-        """Calculate RSI indicator."""
-        if len(prices) < periods + 1:
-            return 50.0  # Not enough data, return neutral RSI
-
-        deltas = np.diff(prices)
-        gain = np.where(deltas > 0, deltas, 0)
-        loss = np.where(deltas < 0, -deltas, 0)
-
-        avg_gain = np.mean(gain[-periods:])
-        avg_loss = np.mean(loss[-periods:])
-
-        if avg_loss == 0:
-            return 100.0
-
-        rs = avg_gain / avg_loss
-        return 100 - (100 / (1 + rs))
-
-    def decide_action(self, current_state: MarketState) -> Tuple[str, float]:
-        """
-        Decide trading action based on current market state and learned weights.
-        Returns: (action, confidence)
-        """
-        # Calculate weighted decision factors
-        technical_score = self._evaluate_technical_factors(current_state)
-        sentiment_score = current_state.sentiment_score
-        volume_score = self._normalize_volume(current_state.volume)
-        volatility_score = self._normalize_volatility(current_state.volatility)
-
-        # Combine factors using learned weights
-        total_score = (
-            self.weights['technical'] * technical_score +
-            self.weights['sentiment'] * sentiment_score +
-            self.weights['volume'] * volume_score +
-            self.weights['volatility'] * volatility_score
+    def _analyze_fundamentals(self, env: MarketEnvironment) -> Dict[str, float]:
+        """Analyze fundamental factors"""
+        # Extract metrics from news
+        metrics = self.market_analyzer.extract_metrics(
+            ' '.join(news.content for news in env.news_items)
         )
 
-        # Determine action and confidence
-        if total_score > self.success_threshold:
-            return 'BUY', total_score
-        elif total_score < -self.success_threshold:
-            return 'SELL', abs(total_score)
-        else:
-            return 'HOLD', abs(total_score)
+        # Calculate score using only available metrics
+        score = 0.0
+        if metrics['growth']:
+            growth_values = [amount for _, amount in metrics['growth']]
+            if growth_values:  # Check if list is not empty
+                score = np.mean(growth_values)
 
-    def _evaluate_technical_factors(self, state: MarketState) -> float:
-        """Evaluate technical indicators to produce a score."""
-        indicators = state.technical_indicators
+        return {'score': np.clip(score / 100, -1, 1)}
 
-        # Trend signal: compare current price to SMA
-        trend_signal = 1.0 if indicators['price'] > indicators['sma'] else -1.0
+    def _calculate_risk_score(self, env: MarketEnvironment) -> float:
+        """Calculate risk score based on market conditions"""
+        # Handle case when volume history is empty
+        avg_volume = np.mean(self.volume_history) if self.volume_history else env.volume
 
-        # Momentum signal: sign of the 5-period momentum
-        momentum_signal = np.sign(indicators['momentum'])
-
-        # RSI signal: overbought (RSI > 70) => -1, oversold (RSI < 30) => +1, else 0
-        rsi_signal = -1.0 if indicators['rsi'] > 70 else (1.0 if indicators['rsi'] < 30 else 0.0)
-
-        return np.mean([trend_signal, momentum_signal, rsi_signal])
-
-    def _normalize_volume(self, volume: float) -> float:
-        """Normalize volume to [-1, 1] range based on memory average."""
-        if not self.memory:
-            return 0.0
-        avg_volume = np.mean([s.volume for s, _, _ in self.memory])
-        if avg_volume == 0:
-            return 0.0
-        return float(np.clip((volume - avg_volume) / avg_volume, -1, 1))
-
-    def _normalize_volatility(self, volatility: float) -> float:
-        """Normalize volatility to [-1, 1] range based on memory average."""
-        if not self.memory:
-            return 0.0
-        avg_volatility = np.mean([s.volatility for s, _, _ in self.memory])
-        if avg_volatility == 0:
-            return 0.0
-        return float(np.clip((volatility - avg_volatility) / avg_volatility, -1, 1))
-
-    def update_memory(self, state: MarketState, action: str, reward: float):
-        """Update agent's memory with new experience."""
-        self.memory.append((state, action, reward))
-        if len(self.memory) > self.memory_size:
-            self.memory.pop(0)
-
-    def adapt_strategy(self):
-        """Adapt trading strategy based on recent performance."""
-        if len(self.memory) < 50:  # Need minimum history to adapt
-            return
-
-        recent_performance = self._calculate_strategy_performance()
-
-        # Adjust weights based on best-performing strategy
-        best_strategy = max(recent_performance.items(), key=lambda x: x[1])[0]
-        if best_strategy == 'trend_following':
-            self.weights['technical'] *= 1.1
-        elif best_strategy == 'mean_reversion':
-            self.weights['volatility'] *= 1.1
-        elif best_strategy == 'sentiment_based':
-            self.weights['sentiment'] *= 1.1
-
-        # Normalize weights
-        total = sum(self.weights.values())
-        self.weights = {k: v / total for k, v in self.weights.items()}
-
-    def _calculate_strategy_performance(self) -> Dict[str, float]:
-        """Calculate recent performance of different strategies."""
-        recent_memory = self.memory[-50:]  # Look at last 50 trades
-
-        performance = {
-            'trend_following': 0.0,
-            'mean_reversion': 0.0,
-            'sentiment_based': 0.0
-        }
-
-        for state, action, reward in recent_memory:
-            if self._would_trend_follow(state) == action:
-                performance['trend_following'] += reward
-            if self._would_mean_revert(state) == action:
-                performance['mean_reversion'] += reward
-            if self._would_follow_sentiment(state) == action:
-                performance['sentiment_based'] += reward
-
-        return performance
-
-    def _would_trend_follow(self, state: MarketState) -> str:
-        """Check if a simple trend-following strategy would suggest this action."""
-        # If momentum is positive -> BUY, if negative -> SELL, else HOLD
-        if state.technical_indicators['momentum'] > 0:
-            return 'BUY'
-        elif state.technical_indicators['momentum'] < 0:
-            return 'SELL'
-        return 'HOLD'
-
-    def _would_mean_revert(self, state: MarketState) -> str:
-        """Check if a mean-reversion strategy would suggest this action."""
-        rsi = state.technical_indicators['rsi']
-        if rsi > 70:
-            return 'SELL'
-        elif rsi < 30:
-            return 'BUY'
-        return 'HOLD'
-
-    def _would_follow_sentiment(self, state: MarketState) -> str:
-        """Check if a sentiment-based strategy would suggest this action."""
-        if state.sentiment_score > 0.6:
-            return 'BUY'
-        elif state.sentiment_score < -0.6:
-            return 'SELL'
-        return 'HOLD'
+        return min(1.0, max(0.0,
+                            0.3 * env.volatility +
+                            0.3 * (1 - env.market_hours) +
+                            0.4 * (1 if env.volume < avg_volume else 0)
+                            ))
 
 
-def main():
-    # Initialize analyzer
-    analyzer = FinancialSentimentAnalyzer()
-
-    # Read and parse JSON file (modify path or filename as needed)
+def process_json_data(json_data: str) -> List[NewsItem]:
+    """Process JSON data into NewsItem objects"""
     try:
+        data = json.loads(json_data)
+        news_items = []
+
+        for result in data['results']:
+            news_items.append(NewsItem(
+                content=result['content'],
+                timestamp=datetime.now(),  # You would normally parse this from the data
+                source=result['source'],
+                score=result['score']
+            ))
+
+        return news_items
+    except (json.JSONDecodeError, KeyError) as e:
+        print(f"Error processing JSON data: {e}")
+        return []
+
+
+# Example usage
+if __name__ == "__main__":
+    try:
+        agent = AdaptiveTradingAgent()
+        analyzer = MarketAnalyzer()
+
+        # Process sample data
         with open('message.txt', 'r', encoding='utf-8') as file:
             json_data = file.read()
 
-        # Extract content
-        messages = analyzer.extract_content_from_json(json_data)
-        combined_text = ' '.join(messages)
+        news_items = process_json_data(json_data)
 
-        # Analyze sentiment
-        analysis_result = analyzer.analyze_market_sentiment(combined_text)
+        # Create sample environment
+        env = MarketEnvironment(
+            current_price=250.0,
+            volume=1000000,
+            timestamp=datetime.now(),
+            news_items=news_items,
+            market_hours=True,
+            volatility=0.02
+        )
 
-        # Print detailed results
-        print("\n=== FINANCIAL SENTIMENT ANALYSIS REPORT ===")
+        # Get trading decision
+        action, size, analysis = agent.decide_action(env)
 
-        print(f"\nBase Sentiment Scores:")
-        for metric, score in analysis_result['base_sentiment'].items():
-            print(f"{metric}: {score:.3f}")
-
-        print(f"\nAdjusted Sentiment Scores:")
-        for metric, score in analysis_result['adjusted_sentiment'].items():
-            print(f"{metric}: {score:.3f}")
-
-        print(f"\nMarket Signals:")
-        signals = analysis_result['market_signals']
-        print(f"Recommended Action: {signals['action']}")
-        print(f"Signal Strength: {signals['signal_strength']}")
-        print(f"Confidence Level: {signals['confidence']}")
-
-        print("\nKey Financial Metrics Found:")
-        for metric_type, values in analysis_result['financial_metrics'].items():
-            if values:
-                print(f"{metric_type}: {values}")
+        print("\n=== Trading Analysis Report ===")
+        print(f"Recommended Action: {action}")
+        print(f"Position Size: {size * 100:.1f}%")
+        print("\nAnalysis Breakdown:")
+        for key, value in analysis.items():
+            print(f"{key}: {value:.3f}")
 
     except Exception as e:
-        print(f"Error during analysis: {e}")
-
-
-if __name__ == "__main__":
-    main()
+        print(f"An error occurred: {e}")
