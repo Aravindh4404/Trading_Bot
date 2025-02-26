@@ -350,7 +350,7 @@ if __name__ == "__main__":
         analyzer = MarketAnalyzer()
 
         # Process sample data
-        with open('message.txt', 'r', encoding='utf-8') as file:
+        with open('../message.txt', 'r', encoding='utf-8') as file:
             json_data = file.read()
 
         news_items = process_json_data(json_data)
